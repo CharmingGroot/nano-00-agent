@@ -3,7 +3,7 @@ import logging
 
 from fastapi import FastAPI
 
-from src.api.routes import chat, health
+from src.api.routes import chat, health, knowledge
 
 
 def create_app() -> FastAPI:
@@ -19,5 +19,6 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(health.router, tags=["health"])
     app.include_router(chat.router, prefix="/chat", tags=["chat"])
+    app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 
     return app
