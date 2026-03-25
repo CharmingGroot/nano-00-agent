@@ -1,0 +1,21 @@
+name: google_sheets
+version: "1.0"
+description: >
+  Connect to Google Sheets as a data source.
+  Reads sheet data for analysis and querying.
+connector: src.datasets.connectors.google_sheets.GoogleSheetsConnector
+
+config_schema:
+  type: object
+  required: [spreadsheet_id]
+  properties:
+    spreadsheet_id:
+      type: string
+      description: Google Sheets spreadsheet ID
+    sheet_name:
+      type: string
+      default: "Sheet1"
+      description: Specific sheet name to read
+    credentials_path:
+      type: string
+      description: Path to Google service account credentials JSON

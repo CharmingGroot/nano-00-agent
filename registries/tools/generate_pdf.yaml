@@ -1,0 +1,33 @@
+name: generate_pdf
+version: "1.0"
+description: >
+  Generate a PDF document from structured content (title, sections).
+  Uses WeasyPrint for rendering.
+handler: src.tools.handlers.generate_pdf.GeneratePdfHandler
+
+input_schema:
+  type: object
+  required: [title, sections]
+  properties:
+    title:
+      type: string
+    sections:
+      type: array
+      items:
+        type: object
+        properties:
+          heading: { type: string }
+          body: { type: string }
+    output_filename:
+      type: string
+      default: "report.pdf"
+
+output_schema:
+  type: object
+  properties:
+    file_path: { type: string }
+    file_size_bytes: { type: integer }
+
+token_estimate: 100
+requires_hitl: false
+timeout_seconds: 60

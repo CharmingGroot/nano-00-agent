@@ -1,0 +1,70 @@
+x-common-env: &common-env
+  DATABASE_URL: postgresql+asyncpg://nano:nano@postgres:5432/nano_agent
+  REDIS_URL: redis://redis:6379/0
+  OLLAMA_BASE_URL: http://host.docker.internal:11434
+  LOG_LEVEL: INFO
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: nano_agent
+      POSTGRES_USER: nano
+      POSTGRES_PASSWORD: nano
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nano -d nano_agent"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  api:
+    build: .
+    command: >
+      uvicorn src.api.app:create_app --host 0.0.0.0 --port 8000 --factory
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *common-env
+    volumes:
+      - ./registries:/app/registries:ro
+      - filestore:/app/filestore
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: >
+      celery -A src.workers.celery_app worker
+      --loglevel=info --concurrency=4 --pool=prefork
+    environment:
+      <<: *common-env
+    volumes:
+      - ./registries:/app/registries:ro
+      - filestore:/app/filestore
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  filestore:

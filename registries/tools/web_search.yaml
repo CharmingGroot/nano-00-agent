@@ -1,0 +1,38 @@
+name: web_search
+version: "1.0"
+description: >
+  Search the web via Tavily API for information on a given query.
+  Returns clean text results with title, url, and content.
+handler: src.tools.handlers.web_search.WebSearchHandler
+
+input_schema:
+  type: object
+  required: [query]
+  properties:
+    query:
+      type: string
+      description: Search query string
+    max_results:
+      type: integer
+      default: 10
+      description: Maximum number of results to return
+    language:
+      type: string
+      default: "ko"
+      description: Language preference (ISO 639-1)
+
+output_schema:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        type: object
+        properties:
+          title: { type: string }
+          url: { type: string }
+          content: { type: string }
+
+token_estimate: 2000
+requires_hitl: false
+timeout_seconds: 30

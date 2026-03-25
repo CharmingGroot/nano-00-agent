@@ -1,0 +1,38 @@
+name: search_knowledge
+version: "1.0"
+description: >
+  Search the embedded knowledge base for documents and chunks
+  matching a query. Returns relevant chunks with similarity scores.
+handler: src.tools.handlers.search_knowledge.SearchKnowledgeHandler
+
+input_schema:
+  type: object
+  required: [query]
+  properties:
+    query:
+      type: string
+      description: Search query for knowledge retrieval
+    top_k:
+      type: integer
+      default: 20
+      description: Number of top results to return
+    file_filter:
+      type: string
+      description: Optional filename filter (partial match)
+
+output_schema:
+  type: object
+  properties:
+    chunks:
+      type: array
+      items:
+        type: object
+        properties:
+          chunk_id: { type: string }
+          content: { type: string }
+          score: { type: number }
+          document_name: { type: string }
+
+token_estimate: 500
+requires_hitl: false
+timeout_seconds: 30

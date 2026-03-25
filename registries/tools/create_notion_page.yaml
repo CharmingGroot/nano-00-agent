@@ -1,0 +1,29 @@
+name: create_notion_page
+version: "1.0"
+description: >
+  Create a new page in Notion with the given title and content.
+  Requires Notion API token to be configured.
+handler: src.tools.handlers.create_notion_page.CreateNotionPageHandler
+
+input_schema:
+  type: object
+  required: [title, content]
+  properties:
+    title:
+      type: string
+    content:
+      type: string
+      description: Page content in markdown format
+    pdf_attachment:
+      type: string
+      description: Optional path to PDF file to attach
+
+output_schema:
+  type: object
+  properties:
+    page_url: { type: string }
+    page_id: { type: string }
+
+token_estimate: 100
+requires_hitl: true
+timeout_seconds: 30

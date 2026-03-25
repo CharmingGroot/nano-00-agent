@@ -1,0 +1,32 @@
+name: summarize
+version: "1.0"
+description: >
+  Summarize given content using LLM. Can produce structured JSON output
+  or free-text summaries depending on instruction.
+handler: src.tools.handlers.summarize.SummarizeHandler
+
+input_schema:
+  type: object
+  required: [content]
+  properties:
+    content:
+      type: string
+      description: Content to summarize
+    instruction:
+      type: string
+      default: "Summarize the key points concisely."
+      description: Specific summarization instruction
+    output_format:
+      type: string
+      enum: [text, json]
+      default: text
+      description: Output format
+
+output_schema:
+  type: object
+  properties:
+    summary: { type: string }
+
+token_estimate: 1500
+requires_hitl: false
+timeout_seconds: 60

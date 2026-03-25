@@ -1,0 +1,22 @@
+# LLM Model Registry
+# Defines available models, their capabilities, and context limits.
+
+models:
+  qwen3.5:9b:
+    provider: ollama
+    context_window: 256000
+    roles: [chat, orchestrator, compressor]
+    description: "Primary chat model — large context, multimodal capable"
+
+  deepseek-r1:14b:
+    provider: ollama
+    context_window: 128000
+    roles: [chat, reasoning]
+    description: "Fallback reasoning model — strong chain-of-thought"
+
+  nomic-embed-text:
+    provider: ollama
+    dimensions: 768
+    context_window: 8192
+    roles: [embedding]
+    description: "Embedding model for knowledge vectorization"
