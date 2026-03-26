@@ -112,18 +112,33 @@ class MiddlewarePipeline:
         )
         total_tokens += 200  # approximate
 
-        state["user_intent"]["intent"] = classify_result.get("intent", "general_chat")
+        intent = classify_result.get("intent", "general_chat")
+        state["user_intent"]["intent"] = intent
         try:
             complexity = int(classify_result.get("complexity", 1))
         except (ValueError, TypeError):
             complexity = 1
 
-        # ── Phase C: Simple Chat vs Complex Task ──────────────────────
+        # If intent suggests tool use or skill match, ensure complexity >= 2
+        required_tools = classify_result.get("required_tools", [])
+        skill_match = classify_result.get("skill")
+        if required_tools or skill_match or intent in ("tool_use", "knowledge_qa", "research"):
+            complexity = max(complexity, 2)
+
+        logger.info("Intent=%s complexity=%d tools=%s", intent, complexity, required_tools)
+
+        # ── Phase C: Simple Chat vs Tool-Enabled Chat vs Complex Task ──
         if complexity <= 1:
-            # Simple chat — direct LLM call with Goal context
+            # Simple chat — direct LLM call, no tools
             return await self._simple_chat(user_message, state, goal, model, total_tokens)
 
-        # ── Phase D: Task Decomposition + Execution ───────────────────
+        if complexity <= 3 and required_tools:
+            # Tool-enabled chat — LLM can call tools directly via tool-call loop
+            return await self._tool_enabled_chat(
+                user_message, state, goal, model, total_tokens, required_tools
+            )
+
+        # ── Phase D: Task Decomposition + Execution (complexity > 3) ──
         plan = await self._decomposer.decompose(
             classify_result=classify_result,
             user_message=user_message,
@@ -226,6 +241,125 @@ class MiddlewarePipeline:
                 "total_steps": len(steps),
                 "completed_steps": len(result.get("node_statuses", {})),
             },
+        }
+
+    async def _tool_enabled_chat(
+        self,
+        user_message: str,
+        state: dict,
+        goal: dict,
+        model: str,
+        tokens_so_far: int,
+        required_tools: list[str],
+    ) -> dict[str, Any]:
+        """Chat with tools enabled — LLM can call tools via tool-call loop.
+
+        Used for medium-complexity requests (2-3) where the LLM should
+        decide which tools to call and in what order.
+        """
+        # Get tool schemas for Ollama
+        tool_schemas = self._tool_registry.get_ollama_tool_schemas(required_tools)
+        if not tool_schemas:
+            # Fallback: get all available tool schemas
+            tool_schemas = self._tool_registry.get_ollama_tool_schemas(
+                self._tool_registry.list_tool_names()
+            )
+
+        messages = ContextManager.assemble_prompt(
+            system_prompt=SYSTEM_PROMPT,
+            goal=goal,
+            state=state,
+            current_step=None,
+            step_instruction=user_message,
+            tool_schemas=tool_schemas,
+        )
+
+        async def tool_executor(tool_name: str, tool_args: dict) -> dict:
+            return await self._tool_registry.execute(tool_name, tool_args)
+
+        async def on_tool_result(tool_name: str, raw_result: Any, goal: dict | None) -> Any:
+            """Compress tool results if needed, store raw to state."""
+            raw_tokens = ToolResultCompressor.get_token_count(raw_result)
+
+            # Store pointer in accumulated_data
+            ptr_id = str(uuid.uuid4())
+            state["accumulated_data"][tool_name] = {
+                "ptr": f"ptr:tool_result:{ptr_id}",
+                "desc": f"{tool_name} 결과 ({raw_tokens} 토큰)",
+                "token_count_raw": raw_tokens,
+            }
+
+            if ToolResultCompressor.needs_compression(raw_result):
+                # Compress via LLM
+                compress_msgs = ToolResultCompressor.build_compression_messages(
+                    goal or {}, raw_result
+                )
+                compress_resp = await self._gateway.chat(LLMRequest(
+                    model=model, messages=compress_msgs
+                ))
+                compressed = ToolResultCompressor.parse_compressed_response(
+                    compress_resp.content, raw_result, ptr_id
+                )
+                state["accumulated_data"][tool_name]["token_count_compressed"] = (
+                    ToolResultCompressor.get_token_count(compressed)
+                )
+
+                # Reflection
+                reflection = Reflector.reflect(
+                    step_completed=tool_name,
+                    step_output=compressed,
+                    goal=goal or {},
+                    task_graph_status={
+                        "completed": list(state["accumulated_data"].keys()),
+                        "pending": [],
+                    },
+                )
+                state["intent_chain"].append(reflection["intent_chain_entry"])
+
+                return compressed
+
+            # No compression needed
+            reflection = Reflector.reflect(
+                step_completed=tool_name,
+                step_output=raw_result,
+                goal=goal or {},
+                task_graph_status={
+                    "completed": list(state["accumulated_data"].keys()),
+                    "pending": [],
+                },
+            )
+            state["intent_chain"].append(reflection["intent_chain_entry"])
+            return raw_result
+
+        # Run through tool-call loop
+        request = LLMRequest(
+            model=model,
+            messages=messages,
+            tools=tool_schemas,
+            goal=goal,
+        )
+        response = await self._gateway.chat_with_tool_loop(
+            request=request,
+            tool_executor=tool_executor,
+            on_tool_result=on_tool_result,
+        )
+
+        total = tokens_so_far + response.token_count_prompt + response.token_count_completion
+        state["token_budget"]["used"] = total
+        state["intent_chain"].append(f"응답 완료 [토큰: {total}]")
+
+        return {
+            "response": response.content,
+            "conversation_state": state,
+            "goal": goal,
+            "token_count": {
+                "prompt": response.token_count_prompt,
+                "completion": response.token_count_completion,
+                "total_this_turn": total,
+                "should_compress": TokenCounter.should_compress(total, model),
+            },
+            "pending_hitl": None,
+            "task_progress": None,
         }
 
     async def _simple_chat(

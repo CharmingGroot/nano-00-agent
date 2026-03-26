@@ -33,16 +33,23 @@ class GeneratePdfHandler(BaseTool):
         filename = f"{file_id}_{output_filename}"
         filepath = FILESTORE_DIR / filename
 
-        try:
-            from weasyprint import HTML
-            HTML(string=html).write_pdf(str(filepath))
-            file_size = filepath.stat().st_size
-        except (ImportError, OSError):
-            # Fallback: save HTML if WeasyPrint not available or system libs missing
+        use_weasyprint = os.environ.get("USE_WEASYPRINT", "false").lower() == "true"
+
+        if use_weasyprint:
+            try:
+                from weasyprint import HTML  # noqa: F811
+                HTML(string=html).write_pdf(str(filepath))
+                file_size = filepath.stat().st_size
+            except Exception:
+                filepath = filepath.with_suffix(".html")
+                filepath.write_text(html, encoding="utf-8")
+                file_size = filepath.stat().st_size
+                logger.warning("WeasyPrint failed — saved as HTML")
+        else:
+            # Default: save as HTML (WeasyPrint requires system libs)
             filepath = filepath.with_suffix(".html")
             filepath.write_text(html, encoding="utf-8")
             file_size = filepath.stat().st_size
-            logger.warning("WeasyPrint not available — saved as HTML")
 
         logger.info("Generated PDF: %s (%d bytes)", filepath, file_size)
         return {
