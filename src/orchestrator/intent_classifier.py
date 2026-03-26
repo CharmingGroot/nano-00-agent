@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT_TEMPLATE = """\
 You are an intent classifier. Given the user's message, classify the intent.
 
+This agent has an INTERNAL KNOWLEDGE BASE with uploaded documents.
+When users ask about specific data, facts, or documents, prefer internal tools over web search.
+
 Available skills (pre-built workflows):
 {skills_section}
 
@@ -31,7 +34,8 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
 Rules:
 - If the message clearly maps to an existing skill, set intent="skill_match" and specify the skill name.
 - If no skill matches but tools are needed, set intent="tool_use" and list the tools.
-- If it's a casual/general question, set intent="chitchat".
+- Prefer knowledge base search tools over web search when the question is about specific data.
+- If it's a casual/general question with no data need, set intent="chitchat".
 - If the message is ambiguous, set intent="clarification_needed".
 - Always extract any parameters you can from the message.
 """
@@ -47,14 +51,14 @@ class IntentClassifier:
         self,
         user_message: str,
         available_skills: list[dict[str, Any]],
-        available_tools: list[str],
+        available_tools: list[dict[str, Any]] | list[str],
     ) -> dict[str, Any]:
         """Classify the user message and return structured intent.
 
         Args:
             user_message: The raw user message.
             available_skills: List of skill dicts with at least 'name' and 'description'.
-            available_tools: List of tool name strings.
+            available_tools: List of tool dicts {name, description} or plain name strings.
 
         Returns:
             {
@@ -66,7 +70,7 @@ class IntentClassifier:
             }
         """
         skills_section = self._format_skills(available_skills)
-        tools_section = ", ".join(available_tools) if available_tools else "(none)"
+        tools_section = self._format_tools(available_tools)
 
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             skills_section=skills_section,
@@ -86,6 +90,21 @@ class IntentClassifier:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_tools(tools: list[dict[str, Any]] | list[str]) -> str:
+        """Format tool list with descriptions for the LLM."""
+        if not tools:
+            return "(none)"
+        lines = []
+        for t in tools:
+            if isinstance(t, dict):
+                name = t.get("name", "unknown")
+                desc = t.get("description", "")
+                lines.append(f"- {name}: {desc[:150]}")
+            else:
+                lines.append(f"- {t}")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_skills(skills: list[dict[str, Any]]) -> str:

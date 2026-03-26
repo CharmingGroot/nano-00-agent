@@ -126,11 +126,19 @@ class MiddlewarePipeline:
         logger.info("Goal: %s", goal.get("final_objective"))
 
         # ── Phase B: Intent Classification ────────────────────────────
-        available_tools = self._tool_registry.list_tool_names()
+        # Pass tool names WITH descriptions so LLM can make informed choices
+        available_tool_infos = []
+        for name in self._tool_registry.list_tool_names():
+            defn = self._tool_registry.get_definition(name)
+            available_tool_infos.append({
+                "name": name,
+                "description": defn.get("description", name) if defn else name,
+            })
+
         classify_result = await self._classifier.classify(
             user_message=user_message,
             available_skills=[],
-            available_tools=available_tools,
+            available_tools=available_tool_infos,
         )
         total_tokens += 200  # approximate
 
@@ -359,7 +367,7 @@ class MiddlewarePipeline:
         for sd in all_source_data:
             data = sd["data"]
             if isinstance(data, dict):
-                # Handle both search_knowledge (chunks) and other tools (results)
+                # Unified: extract items from any source tool response
                 items = data.get("chunks", data.get("results", data.get("items", [])))
                 if isinstance(items, list):
                     for item in items[:5]:
@@ -368,9 +376,13 @@ class MiddlewarePipeline:
                             score = item.get("score", "")
                             content = item.get("content", item.get("data", json.dumps(item, ensure_ascii=False)))
                             score_str = f" | 유사도: {score:.2f}" if isinstance(score, (int, float)) else ""
-                            source_context_parts.append(f"[{label}{score_str}]\n{content}")
+                            source_context_parts.append(
+                                f"[소스: {sd['tool']} | {label}{score_str}]\n{content}"
+                            )
                 else:
-                    source_context_parts.append(json.dumps(data, ensure_ascii=False)[:2000])
+                    source_context_parts.append(
+                        f"[소스: {sd['tool']}]\n{json.dumps(data, ensure_ascii=False)[:2000]}"
+                    )
             else:
                 source_context_parts.append(str(data)[:2000])
 
