@@ -201,9 +201,11 @@ uvicorn src.api.app:create_app --port 8000 --factory
 
 ## 현재 상태
 
-- [x] Phase 1: 기반 (Docker, DB, LLMGateway, /chat, 51 tests)
-- [x] Phase 2: 지식 파이프라인 (PDF/CSV/XLSX → 청킹 → 임베딩 → pgvector 검색, 66 tests)
-- [ ] Phase 3: 도구/스킬 레지스트리 + 오케스트레이터
-- [ ] Phase 4: 컨텍스트 관리 + 상태 압축
-- [ ] Phase 5: HITL + 나머지 도구들
-- [ ] Phase 6: 안정화
+- [x] Phase 1: 기반 (Docker, DB 9테이블, LLMGateway, /chat)
+- [x] Phase 2: 지식 파이프라인 (PDF/CSV/XLSX → 청킹 → 임베딩 → pgvector 검색)
+- [x] Phase 3: 도구/스킬 레지스트리 + 오케스트레이터 (ToolRegistry, SkillDB CRUD, IntentClassifier, TaskDecomposer, DAG Executor)
+- [x] Phase 4: MiddlewarePipeline 통합 (Goal→분류→분해→실행→압축→Reflection)
+- [x] Phase 5: 도구 핸들러 (web_search, generate_pdf, create_notion_page) + E2E 검증
+- [ ] Phase 6: 안정화 (로깅, 에러 복구, 레이트 리밋)
+
+**총 153 테스트 통과** (Python 3.12)

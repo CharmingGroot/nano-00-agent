@@ -58,8 +58,11 @@ class MiddlewarePipeline:
         self._gateway = gateway
         self._tool_registry = tool_registry
         self._session = session
-        self._classifier = IntentClassifier()
-        self._decomposer = TaskDecomposer()
+        self._classifier = IntentClassifier(gateway)
+        # SkillRegistry needs DB session for loading — use empty for now
+        from src.skills.registry import SkillRegistry as SkillReg
+        self._skill_registry = SkillReg()
+        self._decomposer = TaskDecomposer(gateway, self._skill_registry)
 
     async def process(
         self,
@@ -102,19 +105,18 @@ class MiddlewarePipeline:
 
         # ── Phase B: Intent Classification ────────────────────────────
         available_tools = self._tool_registry.list_tool_names()
-        classify_result = IntentClassifier.parse_response(
-            (await self._gateway.chat(LLMRequest(
-                model=model,
-                messages=IntentClassifier.build_messages(
-                    user_message, available_tools, []
-                ),
-            ))).content,
-            user_message,
+        classify_result = await self._classifier.classify(
+            user_message=user_message,
+            available_skills=[],
+            available_tools=available_tools,
         )
         total_tokens += 200  # approximate
 
         state["user_intent"]["intent"] = classify_result.get("intent", "general_chat")
-        complexity = classify_result.get("complexity", 1)
+        try:
+            complexity = int(classify_result.get("complexity", 1))
+        except (ValueError, TypeError):
+            complexity = 1
 
         # ── Phase C: Simple Chat vs Complex Task ──────────────────────
         if complexity <= 1:
@@ -122,9 +124,8 @@ class MiddlewarePipeline:
             return await self._simple_chat(user_message, state, goal, model, total_tokens)
 
         # ── Phase D: Task Decomposition + Execution ───────────────────
-        plan = TaskDecomposer.decompose(
+        plan = await self._decomposer.decompose(
             classify_result=classify_result,
-            skills_db={},  # Will load from DB in Phase 5
             user_message=user_message,
         )
 
