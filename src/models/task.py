@@ -34,8 +34,4 @@ class TaskNode(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0)
 
     graph: Mapped["TaskGraph"] = relationship(back_populates="nodes")
-    tool_results: Mapped[list["ToolResult"]] = relationship(back_populates="task_node")
-
-
-# Import here to avoid circular
-from src.models.tool_result import ToolResult  # noqa: E402, F401
+    tool_results: Mapped[list["ToolResult"]] = relationship("ToolResult", back_populates="task_node")
