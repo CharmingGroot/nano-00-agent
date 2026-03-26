@@ -28,6 +28,7 @@ from src.orchestrator.task_decomposer import TaskDecomposer
 from src.orchestrator.task_graph import TaskGraphExecutor
 from src.skills.executor import SkillExecutor
 from src.models.tool_result import ToolResult
+from src.middleware.pointer_resolver import PointerResolver
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class MiddlewarePipeline:
         self._tool_registry = tool_registry
         self._session = session
         self._classifier = IntentClassifier(gateway)
+        self._pointer_resolver = PointerResolver(gateway, session)
         # SkillRegistry needs DB session for loading — use empty for now
         from src.skills.registry import SkillRegistry as SkillReg
         self._skill_registry = SkillReg()
@@ -260,10 +262,14 @@ class MiddlewarePipeline:
         # Get tool schemas for Ollama
         tool_schemas = self._tool_registry.get_ollama_tool_schemas(required_tools)
         if not tool_schemas:
-            # Fallback: get all available tool schemas
             tool_schemas = self._tool_registry.get_ollama_tool_schemas(
                 self._tool_registry.list_tool_names()
             )
+
+        # ── Resolve pointers from previous turns ──────────────────────
+        relevant_data = await self._resolve_pointers_for_question(
+            user_message, state, model
+        )
 
         messages = ContextManager.assemble_prompt(
             system_prompt=SYSTEM_PROMPT,
@@ -271,6 +277,7 @@ class MiddlewarePipeline:
             state=state,
             current_step=None,
             step_instruction=user_message,
+            relevant_data=relevant_data,
             tool_schemas=tool_schemas,
         )
 
@@ -362,6 +369,39 @@ class MiddlewarePipeline:
             "task_progress": None,
         }
 
+    async def _resolve_pointers_for_question(
+        self,
+        user_message: str,
+        state: dict,
+        model: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve relevant pointers from previous turns for the current question.
+
+        1. Collect all pointers from state
+        2. If pointers exist, ask LLM to select relevant ones
+        3. Fetch selected pointer data from DB
+        """
+        pointers = self._pointer_resolver.collect_pointers(state)
+        if not pointers:
+            return []
+
+        try:
+            selected = await self._pointer_resolver.select_relevant_pointers(
+                user_message, pointers, model
+            )
+            if not selected:
+                return []
+
+            resolved = await self._pointer_resolver.fetch_pointer_data(selected)
+            logger.info(
+                "Resolved %d pointers for question: %s",
+                len(resolved), user_message[:50],
+            )
+            return resolved
+        except Exception as e:
+            logger.warning("Pointer resolution failed: %s — continuing without context", e)
+            return []
+
     async def _simple_chat(
         self,
         user_message: str,
@@ -371,12 +411,24 @@ class MiddlewarePipeline:
         tokens_so_far: int,
     ) -> dict[str, Any]:
         """Handle simple (non-skill) chat with Goal + context."""
+        # Resolve pointers from previous turns
+        relevant_data = await self._resolve_pointers_for_question(
+            user_message, state, model
+        )
+
         messages = ContextManager.build_simple_chat_prompt(
             system_prompt=SYSTEM_PROMPT,
             user_message=user_message,
             goal=goal,
             state=state,
         )
+
+        # Inject resolved pointer data into system prompt if available
+        if relevant_data:
+            data_section = "\n\n## Retrieved Context from Previous Turns\n"
+            for item in relevant_data:
+                data_section += f"\n[{item['ptr']}] {item['desc']}\n{item['content']}\n"
+            messages[0]["content"] += data_section
 
         # Token check before sending
         msg_tokens = TokenCounter.count_messages_tokens(messages)
