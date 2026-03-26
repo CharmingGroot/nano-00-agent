@@ -57,7 +57,7 @@ class LLMGateway:
     def __init__(self):
         self._client = httpx.AsyncClient(
             base_url=settings.ollama_base_url,
-            timeout=httpx.Timeout(120.0, connect=10.0),
+            timeout=httpx.Timeout(600.0, connect=30.0),
         )
 
     async def chat(self, request: LLMRequest) -> LLMResponse:

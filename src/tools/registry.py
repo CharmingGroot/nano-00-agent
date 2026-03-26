@@ -68,6 +68,14 @@ class ToolRegistry:
         self._definitions[name] = definition
         self._handlers[name] = handler
 
+    def has_tool(self, name: str) -> bool:
+        """Check if a tool is registered."""
+        return name in self._handlers
+
+    def list_tool_names(self) -> list[str]:
+        """List all registered tool names."""
+        return list(self._definitions.keys())
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------

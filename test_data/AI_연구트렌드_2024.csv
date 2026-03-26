@@ -1,0 +1,11 @@
+﻿분야,2023_논문수,2024_논문수,증가율(%),주요학회,대표논문,산업적용도,키워드
+Multimodal LLM,448,535,40.6,ICLR,Advances in Multimodal LLM: A Survey (2024),낮음,"reasoning, transformer, efficiency"
+Efficient Fine-tuning,484,224,73.9,EMNLP,Advances in Efficient Fine-tuning: A Survey (2024),낮음,"tool-use, chain-of-thought, safety"
+Agent Architecture,436,553,95.8,ICLR,Advances in Agent Architecture: A Survey (2024),낮음,"multimodal, tool-use, reasoning"
+RAG Systems,131,586,73.0,ICML,Advances in RAG Systems: A Survey (2024),낮음,"alignment, tool-use, reasoning"
+Code Generation,370,344,48.4,NeurIPS,Advances in Code Generation: A Survey (2024),낮음,"alignment, efficiency, chain-of-thought"
+Vision-Language Model,221,427,135.0,NeurIPS,Advances in Vision-Language Model: A Survey (2024),높음,"scaling, efficiency, multimodal"
+Reinforcement Learning from Human Feedback,405,256,108.9,NeurIPS,Advances in Reinforcement Learning from Human Feedback: A Survey (2024),중간,"multimodal, safety, reasoning"
+Small Language Model,262,163,39.0,EMNLP,Advances in Small Language Model: A Survey (2024),중간,"chain-of-thought, transformer, multimodal"
+Mixture of Experts,294,106,142.0,ACL,Advances in Mixture of Experts: A Survey (2024),중간,"multimodal, tool-use, efficiency"
+Neural Architecture Search,299,324,48.2,EMNLP,Advances in Neural Architecture Search: A Survey (2024),높음,"multimodal, safety, chain-of-thought"

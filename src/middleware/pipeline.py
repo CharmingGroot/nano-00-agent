@@ -32,10 +32,30 @@ from src.middleware.pointer_resolver import PointerResolver
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are nano-00-agent, an AI assistant powered by local LLMs.
-You help users with document analysis, research, and various tasks.
-Always respond in the user's language.
-When you need information, use the available tools."""
+BASE_SYSTEM_PROMPT = """You are nano-00-agent, an AI assistant powered by local LLMs.
+You have access to an internal knowledge base with uploaded documents (PDF, CSV, XLSX).
+
+IMPORTANT: When users ask about data that might be in the knowledge base,
+always search the knowledge base first before answering from general knowledge.
+
+Always respond in the user's language."""
+
+
+def build_system_prompt(tool_registry: ToolRegistry) -> str:
+    """Build system prompt dynamically from registered tools. No hardcoding."""
+    tools = tool_registry.list_tool_names()
+    if not tools:
+        return BASE_SYSTEM_PROMPT
+
+    tool_descriptions = []
+    for name in tools:
+        defn = tool_registry.get_definition(name)
+        if defn:
+            desc = defn.get("description", name)
+            tool_descriptions.append(f"- {name}: {desc.strip()[:100]}")
+
+    tools_section = "\n".join(tool_descriptions)
+    return f"{BASE_SYSTEM_PROMPT}\n\nAvailable tools:\n{tools_section}"
 
 
 class MiddlewarePipeline:
@@ -59,9 +79,9 @@ class MiddlewarePipeline:
         self._gateway = gateway
         self._tool_registry = tool_registry
         self._session = session
+        self._system_prompt = build_system_prompt(tool_registry) if tool_registry else BASE_SYSTEM_PROMPT
         self._classifier = IntentClassifier(gateway)
         self._pointer_resolver = PointerResolver(gateway, session)
-        # SkillRegistry needs DB session for loading — use empty for now
         from src.skills.registry import SkillRegistry as SkillReg
         self._skill_registry = SkillReg()
         self._decomposer = TaskDecomposer(gateway, self._skill_registry)
@@ -129,13 +149,22 @@ class MiddlewarePipeline:
 
         logger.info("Intent=%s complexity=%d tools=%s", intent, complexity, required_tools)
 
-        # ── Phase C: Simple Chat vs Tool-Enabled Chat vs Complex Task ──
-        if complexity <= 1:
-            # Simple chat — direct LLM call, no tools
+        # ── Phase C: Route based on required_tools from IntentClassifier ──
+        # No hardcoded keywords — routing is entirely LLM-driven.
+        # Any tool in required_tools that is a "source" (search_knowledge, web_search,
+        # query_dataset, etc.) triggers source-augmented chat.
+        source_tools = [t for t in required_tools if self._tool_registry.has_tool(t)]
+
+        if complexity <= 1 and not source_tools:
             return await self._simple_chat(user_message, state, goal, model, total_tokens)
 
+        if source_tools:
+            # Source-augmented chat: execute source tools first, then answer with context
+            return await self._source_augmented_chat(
+                user_message, state, goal, model, total_tokens, source_tools
+            )
+
         if complexity <= 3 and required_tools:
-            # Tool-enabled chat — LLM can call tools directly via tool-call loop
             return await self._tool_enabled_chat(
                 user_message, state, goal, model, total_tokens, required_tools
             )
@@ -245,6 +274,150 @@ class MiddlewarePipeline:
             },
         }
 
+    async def _source_augmented_chat(
+        self,
+        user_message: str,
+        state: dict,
+        goal: dict,
+        model: str,
+        tokens_so_far: int,
+        source_tools: list[str],
+    ) -> dict[str, Any]:
+        """Execute source tools first, then answer with retrieved context.
+
+        "Source" = any registered tool that retrieves data. The IntentClassifier
+        query_dataset, etc.). The middleware calls them directly — more reliable
+        than waiting for sLLM to generate tool_calls.
+
+        No hardcoding: any tool registered in ToolRegistry can be a source.
+        The IntentClassifier decides which source tools to use.
+        """
+        all_source_data = []
+
+        for tool_name in source_tools:
+            logger.info("Source-augmented: executing %s for '%s'", tool_name, user_message[:50])
+
+            try:
+                # Build generic args — all source tools accept "query"
+                tool_args = {"query": user_message}
+                result = await self._tool_registry.execute(tool_name, tool_args)
+            except Exception as e:
+                logger.warning("Source tool %s failed: %s", tool_name, e)
+                continue
+
+            # Store raw result as pointer
+            ptr_id = str(uuid.uuid4())
+            result_text = json.dumps(result, ensure_ascii=False)
+            raw_tokens = TokenCounter.count_tokens(result_text)
+
+            state["accumulated_data"][f"{tool_name}_{ptr_id[:8]}"] = {
+                "ptr": f"ptr:tool_result:{ptr_id}",
+                "desc": f"{tool_name} 결과 ({user_message[:30]})",
+                "token_count_raw": raw_tokens,
+            }
+
+            # Compress if needed
+            if ToolResultCompressor.needs_compression(result):
+                compress_msgs = ToolResultCompressor.build_compression_messages(goal, result)
+                try:
+                    compress_resp = await self._gateway.chat(LLMRequest(model=model, messages=compress_msgs))
+                    compressed = ToolResultCompressor.parse_compressed_response(
+                        compress_resp.content, result, ptr_id
+                    )
+                    all_source_data.append({
+                        "tool": tool_name,
+                        "data": compressed,
+                        "raw_tokens": raw_tokens,
+                    })
+                    state["accumulated_data"][f"{tool_name}_{ptr_id[:8]}"]["token_count_compressed"] = (
+                        ToolResultCompressor.get_token_count(compressed)
+                    )
+                except Exception as e:
+                    logger.warning("Compression failed for %s: %s", tool_name, e)
+                    all_source_data.append({"tool": tool_name, "data": result, "raw_tokens": raw_tokens})
+            else:
+                all_source_data.append({"tool": tool_name, "data": result, "raw_tokens": raw_tokens})
+
+            # Reflection
+            reflection = Reflector.reflect(
+                step_completed=tool_name,
+                step_output=result,
+                goal=goal,
+                task_graph_status={
+                    "completed": list(state["accumulated_data"].keys()),
+                    "pending": [],
+                },
+            )
+            state["intent_chain"].append(reflection["intent_chain_entry"])
+
+        if not all_source_data:
+            state["intent_chain"].append("소스 검색 결과 없음 — 일반 대화로 전환")
+            return await self._simple_chat(user_message, state, goal, model, tokens_so_far)
+
+        # Format all source results as context
+        source_context_parts = []
+        for sd in all_source_data:
+            data = sd["data"]
+            if isinstance(data, dict):
+                # Handle both search_knowledge (chunks) and other tools (results)
+                items = data.get("chunks", data.get("results", data.get("items", [])))
+                if isinstance(items, list):
+                    for item in items[:5]:
+                        if isinstance(item, dict):
+                            label = item.get("document_name", item.get("title", sd["tool"]))
+                            score = item.get("score", "")
+                            content = item.get("content", item.get("data", json.dumps(item, ensure_ascii=False)))
+                            score_str = f" | 유사도: {score:.2f}" if isinstance(score, (int, float)) else ""
+                            source_context_parts.append(f"[{label}{score_str}]\n{content}")
+                else:
+                    source_context_parts.append(json.dumps(data, ensure_ascii=False)[:2000])
+            else:
+                source_context_parts.append(str(data)[:2000])
+
+        source_context = "\n\n".join(source_context_parts)
+
+        # Resolve previous turn pointers
+        previous_data = await self._resolve_pointers_for_question(user_message, state, model)
+        previous_context = ""
+        if previous_data:
+            previous_context = "\n\n## 이전 대화에서 참조한 데이터\n" + "\n".join(
+                f"[{d['ptr']}] {d['desc']}\n{d['content']}" for d in previous_data
+            )
+
+        # Build prompt
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"{self._system_prompt}\n\n"
+                    f"## Current Goal\n{goal.get('final_objective', 'N/A')}\n\n"
+                    f"## 검색된 소스 데이터 (반드시 이 데이터를 기반으로 답변하세요)\n{source_context}"
+                    f"{previous_context}"
+                ),
+            },
+            {"role": "user", "content": user_message},
+        ]
+
+        resp = await self._gateway.chat(LLMRequest(model=model, messages=messages))
+        total = tokens_so_far + resp.token_count_prompt + resp.token_count_completion
+
+        state["token_budget"]["used"] = total
+        state["intent_chain"].append(f"소스 기반 응답 완료 [토큰: {total}]")
+
+        return {
+            "response": resp.content,
+            "conversation_state": state,
+            "goal": goal,
+            "token_count": {
+                "prompt": resp.token_count_prompt,
+                "completion": resp.token_count_completion,
+                "total_this_turn": total,
+                "should_compress": TokenCounter.should_compress(total, model),
+            },
+            "pending_hitl": None,
+            "task_progress": None,
+        }
+
     async def _tool_enabled_chat(
         self,
         user_message: str,
@@ -272,7 +445,7 @@ class MiddlewarePipeline:
         )
 
         messages = ContextManager.assemble_prompt(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=self._system_prompt,
             goal=goal,
             state=state,
             current_step=None,
@@ -417,7 +590,7 @@ class MiddlewarePipeline:
         )
 
         messages = ContextManager.build_simple_chat_prompt(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=self._system_prompt,
             user_message=user_message,
             goal=goal,
             state=state,
@@ -444,7 +617,7 @@ class MiddlewarePipeline:
             )
             # Rebuild messages with compressed state
             messages = ContextManager.build_simple_chat_prompt(
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=self._system_prompt,
                 user_message=user_message,
                 goal=goal,
                 state=state,
