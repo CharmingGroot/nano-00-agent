@@ -11,8 +11,7 @@
 6. [포인터 기반 컨텍스트 관리](#포인터-기반-컨텍스트-관리)
 7. [도구 결과 압축 (20K→4K 토큰)](#도구-결과-압축)
 8. [구조화 상태 JSON](#구조화-상태-json)
-9. [기술 스택과 구현](#기술-스택과-구현)
-10. [실제 동작 예시](#실제-동작-예시)
+9. [실제 동작 예시](#실제-동작-예시)
 
 ---
 
@@ -285,35 +284,6 @@ Turn 50에서 "Turn 3에서 했던 관세 분석 결과 다시 보여줘"라고 
 `intent_chain`이 핵심입니다. sLLM도 이해할 수 있는 **자연어 의도 체인**으로, "왜 이 태스크를 하고 있는지"를 추적합니다. 매 스텝 완료 시 미들웨어가 자동으로 한 줄씩 추가합니다.
 
 토큰이 150K에 도달하면 `StateCompressor`가 LLM을 호출하여 상태를 압축합니다. intent_chain은 최근 10개만 유지하고, accumulated_data는 포인터만 남깁니다.
-
----
-
-## 기술 스택과 구현
-
-| 구성요소 | 선택 | 역할 |
-|---------|------|------|
-| Python 3.12 | 언어 | async/await 기반 |
-| FastAPI | API | /chat, /knowledge, /admin |
-| PostgreSQL 17 + pgvector 0.8.2 | 벡터 DB | 지식 임베딩 + 유사도 검색 |
-| Redis 7 | 큐/캐시 | Celery broker |
-| Ollama | LLM 런타임 | 로컬 sLLM (9B급, 256K ctx) |
-| 임베딩 모델 | 벡터 생성 | 768차원, 8K 컨텍스트 |
-| Docker Compose | 인프라 | pgvector + Redis + API + Worker |
-
-### 지식 파이프라인
-
-```
-PDF/CSV/XLSX → DocumentParser → TextChunker(512tok, 50overlap)
-→ Embedder(임베딩 모델) → pgvector(Vector(768))
-→ KnowledgeRetriever(cosine similarity, top-K)
-```
-
-### 도구/스킬 시스템
-
-- **도구(Tool)**: 정적 YAML 정의 + Python 핸들러. 코드와 함께 배포.
-- **스킬(Skill)**: PostgreSQL `skills` 테이블에 JSONB로 저장. API로 CRUD 가능.
-- 스킬은 도구의 DAG(방향 비순환 그래프)로, 위상 정렬로 실행됩니다.
-- `{{steps.search.output}}` 같은 템플릿으로 스텝 간 데이터 전달.
 
 ---
 
